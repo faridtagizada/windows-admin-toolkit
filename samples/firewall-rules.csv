@@ -1,0 +1,5 @@
+﻿Name,DisplayName,Direction,Action,Protocol,LocalPort,RemotePort,RemoteAddress,Profile,Program,Description
+WAT-HTTPS-In,Veb server (HTTPS),Inbound,Allow,TCP,443,,,Domain|Private,,Daxili veb xidməti üçün
+WAT-SQL-LAN-In,SQL Server - yalnız daxili şəbəkə,Inbound,Allow,TCP,1433,,10.0.0.0/8|192.168.0.0/16,Domain|Private,,SQL-ə yalnız LAN-dan giriş
+WAT-Ping-In,Ping (ICMPv4) - lokal alt şəbəkə,Inbound,Allow,ICMPv4,,,LocalSubnet,Domain|Private,,Şəbəkə diaqnostikası
+WAT-Telnet-Out-Block,Telnet çıxışını blokla,Outbound,Block,TCP,,23,,Any,,Şifrələnməmiş protokol qadağandır

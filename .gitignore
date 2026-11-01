@@ -1,0 +1,8 @@
+# Run output, in case -WorkDirectory points inside the repo.
+# credentials.csv holds temporary passwords and must never be committed.
+credentials.csv
+run.log
+*.wfw
+*_logs_*.zip
+*.zip.sha256
+*.evtx

@@ -1,0 +1,4 @@
+# Keep the script and CSV files byte-for-byte as they are: UTF-8 with BOM and CRLF.
+# Windows PowerShell 5.1 needs the BOM to read the Azerbaijani text correctly.
+*.ps1 -text
+*.csv -text
