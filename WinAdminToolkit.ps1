@@ -1091,8 +1091,10 @@ function Enable-PasswordChangeAtLogon {
     # "İstifadəçi növbəti girişdə parolu dəyişməlidir" bayrağı (New-LocalUser-da belə parametr yoxdur)
     $adsiPath = 'WinNT://{0}/{1},user' -f $env:COMPUTERNAME, $UserName
     $adsiUser = [ADSI]$adsiPath
-    $adsiUser.Put('PasswordExpired', 1)
-    $adsiUser.SetInfo()
+    # ADSI metodları $null qaytarır: $null = olmasa, o funksiyanın nəticəsinə düşür və Invoke-UserProvisioning
+    # tək obyekt əvəzinə massiv qaytarır (StrictMode-da "property 'Cancelled' cannot be found" xətası)
+    $null = $adsiUser.Put('PasswordExpired', 1)
+    $null = $adsiUser.SetInfo()
 
     # Nəzarət oxunuşu (yalnız xəbərdarlıq verir - hesab artıq düzgün yaradılıb)
     try {
@@ -1368,7 +1370,7 @@ function Invoke-UserProvisioning {
                 # Əvvəlcə ADSI (.NET çağırışı) - dayandırılan konveyerdə cmdlet işləməyə bilər
                 try {
                     $computer = [ADSI]('WinNT://{0},computer' -f $env:COMPUTERNAME)
-                    $computer.Delete('user', $item.UserName)
+                    $null = $computer.Delete('user', $item.UserName)
                     $rolledBack = $true
                 }
                 catch {
