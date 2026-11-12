@@ -22,14 +22,18 @@
       - Parollar CSV-də saxlanılmır. Hər hesab üçün kriptoqrafik təsadüfi müvəqqəti parol
         yaradılır və ilk girişdə dəyişdirilməsi məcburi edilir. Parol heç bir PowerShell
         cmdlet-inə ötürülmür, ona görə "Module Logging" jurnalına düşmür.
-      - Hesab deaktiv yaradılır və qruplara əlavə edildikdən sonra aktivləşdirilir. Hər hansı
-        addım alınmasa (Ctrl+C daxil), yarımçıq hesab avtomatik silinir.
+      - Hesab deaktiv yaradılır və qruplara əlavə edildikdən sonra aktivləşdirilir. Hesab
+        yaradıldıqdan sonrakı addımlardan biri alınmasa (Ctrl+C daxil), yarımçıq hesab avtomatik
+        silinir. Ctrl+C məhz New-LocalUser işləyərkən basılarsa, hesab deaktiv qala bilər: onun
+        müvəqqəti parolu credentials.csv faylına "YARIMÇIQ" qeydi ilə yazılır.
       - Administrators, Backup Operators, Hyper-V Administrators qruplarına əlavə etmək yalnız
         -AllowPrivilegedGroups ilə mümkündür.
       - Bu qaydalar yalnız -AllowRiskyRules ilə qəbul olunur: uzaqdan idarəetmə portlarını
         (22, 3389, 5985, 5986) və ya bütün portları bloklayan istənilən daxil olan Block qaydası
         (ünvan göstərilsə belə), svchost.exe / System / sshd.exe proqramını bloklayan qayda,
         bütün çıxan trafiki bloklayan qayda və hər yerdən bütün portlara icazə verən qayda.
+        "Hər yer": boş RemoteAddress, Any, Internet və ya birlikdə bütün ünvanları əhatə edən
+        siyahı (məs. 0.0.0.0/1|128.0.0.0/1) - yazılışa görə yox, əhatəyə görə yoxlanılır.
       - Firewall dəyişikliyindən əvvəl siyasətin tam ehtiyat nüsxəsi (netsh advfirewall export)
         alınır. Qaydalardan biri əlavə edilə bilməsə, bu işə salınmada əlavə olunanlar geri silinir.
       - Nəticə qovluğu (-WorkDirectory) və onun üst qovluqları yoxlanılır: başqa istifadəçilər
@@ -73,6 +77,8 @@
                       şəbəkədə açılmasın deyə), Block üçün Any
       Program         Proqramın tam yolu (məs. %ProgramFiles%\App\app.exe) və ya System
       Description     Təsvir
+      IcmpType        ICMP tipi və ya tip:kod (0-255), məs. 8 (echo request) və ya 3:4; bir neçəsi
+                      | ilə. Yalnız ICMPv4/ICMPv6 üçün. Boş = bütün ICMP tipləri
 
 .PARAMETER AllowPrivilegedGroups
     İstifadəçiləri Administrators, Backup Operators və Hyper-V Administrators qruplarına
@@ -158,7 +164,8 @@ param(
     [switch]$AllowRiskyRules,
 
     [ValidateScript({
-            if ($_ -match '^[A-Za-z0-9._-]{1,64}$') { return $true }
+            # -cmatch: -match böyük-kiçik hərfi nəzərə almır və İ, K (Kelvin) simvollarını da qəbul edir
+            if ($_ -cmatch '^[A-Za-z0-9._-]{1,64}$') { return $true }
             throw 'RuleGroup yalnız latın hərfi, rəqəm, nöqtə, alt xətt və defisdən ibarət ola bilər (1-64 simvol).'
         })]
     [string]$RuleGroup = 'WinAdminToolkit',
@@ -190,6 +197,7 @@ $ErrorActionPreference = 'Stop'
 $script:RunStamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $script:LogFile = $null
 $script:Utf8Bom = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $true
+$script:Utf8NoBom = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
 # Excel-in Azərbaycan hərflərini düzgün göstərməsi üçün CSV-lər BOM ilə yazılır
 $script:CsvEncoding = if ($PSVersionTable.PSVersion.Major -ge 6) { 'utf8BOM' } else { 'UTF8' }
 # Parol faylı Excel-də iki kliklə düzgün açılsın deyə sistemin siyahı ayırıcısı (AZ/RU/TR: ;)
@@ -198,7 +206,7 @@ $script:CredentialDelimiter = [System.Globalization.CultureInfo]::CurrentCulture
 # CSV-də icazə verilən sütunlar (hərf səhvi olan sütun səssizcə atılmasın deyə)
 $script:UserColumns = @('UserName', 'FullName', 'Description', 'Groups', 'AccountExpires')
 $script:FirewallColumns = @('Name', 'DisplayName', 'Direction', 'Action', 'Protocol', 'LocalPort',
-    'RemotePort', 'RemoteAddress', 'Profile', 'Program', 'Description')
+    'RemotePort', 'RemoteAddress', 'Profile', 'Program', 'Description', 'IcmpType')
 
 # Qrupların ingiliscə adı -> SID. Windows başqa dildə olanda qrup adları tərcümə olunur,
 # SID isə həmişə eynidir. Ona görə qruplar SID ilə tapılır.
@@ -237,8 +245,12 @@ $script:ManagementPorts = @(22, 3389, 5985, 5986)
 $script:ManagementPrograms = @('svchost.exe', 'System', 'sshd.exe')
 $script:AddressKeywords = @('Any', 'LocalSubnet', 'LocalSubnet4', 'LocalSubnet6', 'Internet', 'Intranet',
     'IntranetRemoteAccess', 'PlayToDevice', 'DNS', 'DHCP', 'WINS', 'DefaultGateway')
-# Bütün ünvanları əhatə edən yazılışlar (risk yoxlamasında "hər yer" sayılır)
-$script:MatchAllAddresses = @('0.0.0.0/0', '::/0', '0.0.0.0/0.0.0.0', '0.0.0.0-255.255.255.255')
+# Risk yoxlamasında "hər yer": ünvanlar birlikdə bütün unicast IPv4 (1.0.0.0-223.255.255.255) və ya
+# bütün qlobal IPv6 (2000::/3) sahəsini əhatə edirsə. 0.0.0.0/8 və multicast mənbə ünvanı ola bilmir.
+$script:AnyIPv4From = [System.Numerics.BigInteger]::Parse('16777216')
+$script:AnyIPv4To = [System.Numerics.BigInteger]::Parse('3758096383')
+$script:AnyIPv6From = [System.Numerics.BigInteger]::Pow(2, 125)
+$script:AnyIPv6To = [System.Numerics.BigInteger]::Pow(2, 126) - 1
 # Security jurnalından xülasəyə düşən əsas hadisələr (tam jurnal .evtx faylındadır)
 $script:SecurityEventIds = @(
     1102, # audit jurnalı təmizləndi
@@ -922,9 +934,14 @@ function Write-Utf8File {
 
         [Parameter(Mandatory = $true)]
         [AllowEmptyString()]
-        [string]$Content
+        [string]$Content,
+
+        [switch]$NoBom
     )
-    [System.IO.File]::WriteAllText($Path, $Content, $script:Utf8Bom)
+    $encoding = $script:Utf8Bom
+    # sha256sum kimi alətlər faylın əvvəlindəki BOM-u tanımır
+    if ($NoBom) { $encoding = $script:Utf8NoBom }
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
 }
 
 # ============================================================================
@@ -938,7 +955,8 @@ function Test-LocalUserName {
     )
     # Windows daha çox simvola icazə verir, amma skriptlər, yollar və əl ilə yazma üçün
     # yalnız təhlükəsiz simvollar qəbul olunur.
-    if ($Name -notmatch '^[A-Za-z0-9._-]{1,20}$') {
+    # -cnotmatch: böyük-kiçik hərfə həssas yoxlama İ və K (Kelvin) simvollarını latın hərfi saymır
+    if ($Name -cnotmatch '^[A-Za-z0-9._-]{1,20}$') {
         return 'ad 1-20 simvol olmalı və yalnız latın hərfi, rəqəm, nöqtə, alt xətt, defisdən ibarət olmalıdır'
     }
     if ($Name.StartsWith('-') -or $Name.StartsWith('.')) { return 'ad defis və ya nöqtə ilə başlaya bilməz' }
@@ -1308,7 +1326,17 @@ function Invoke-UserProvisioning {
             if ($item.Expires) { $newUserParams['AccountExpires'] = $item.Expires }
 
             $creationStarted = $true
-            $newUser = New-LocalUser @newUserParams
+            try {
+                $newUser = New-LocalUser @newUserParams
+            }
+            catch {
+                # New-LocalUser xəta qaytarıbsa, hesabı yaratmayıb (Ctrl+C-də catch işləmir - o hal finally-dədir)
+                $creationStarted = $false
+                if ($_.FullyQualifiedErrorId -like 'UserExists*') {
+                    throw 'bu adda hesabı yoxlamadan sonra başqası yaradıb - ona toxunulmadı'
+                }
+                throw
+            }
 
             foreach ($group in $item.Groups) {
                 try {
@@ -1371,10 +1399,27 @@ function Invoke-UserProvisioning {
                 }
             }
             elseif ($creationStarted -and -not $completed) {
-                # New-LocalUser işləyərkən kəsilibsə (məs. Ctrl+C), hesab yaranmış, amma bizə qaytarılmamış ola
-                # bilər. Başqasının hesabını silməmək üçün avtomatik silinmir - yalnız xəbərdarlıq edilir.
-                if (@(Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $item.UserName }).Count -gt 0) {
-                    Write-RunLog WARN ('"{0}" hesabı mövcuddur, amma yaradılma prosesi yarımçıq kəsilib: hesab deaktiv və parolu naməlum ola bilər. Yoxlayın, lazım deyilsə silin.' -f $item.UserName)
+                # New-LocalUser işləyərkən kəsilib (Ctrl+C): hesab yaranmış, amma bizə qaytarılmamış ola bilər.
+                # Yoxlama mərhələsində bu adda hesab yox idi, ona görə indi varsa, çox güman ki, bu parolla
+                # yaradılıb. Başqasının hesabını silməmək üçün avtomatik silinmir, amma parol fayla yazılır ki,
+                # hesab "parolu naməlum" qalmasın. Burada cmdlet yox, ADSI (.NET) işlədilir: kəsilən konveyerdə
+                # cmdlet işləməyə bilər.
+                $accountExists = $false
+                try {
+                    $accountExists = [ADSI]::Exists(('WinNT://{0}/{1},user' -f $env:COMPUTERNAME, $item.UserName))
+                }
+                catch {
+                    $accountExists = $false
+                }
+                if ($accountExists) {
+                    try {
+                        Write-CredentialRow -Path $credentialFile -Item $item -TemporaryPassword $plainPassword -Status 'YARIMÇIQ - hesab deaktivdir, yoxlayın'
+                        $credentialRows++
+                    }
+                    catch {
+                        Write-RunLog ERROR ('"{0}" üçün parol fayla yazıla bilmədi: {1}' -f $item.UserName, $_.Exception.Message)
+                    }
+                    Write-RunLog WARN ('"{0}" yaradılarkən iş kəsildi: hesab deaktiv qala bilər. Onun müvəqqəti parolu credentials.csv faylındadır ("YARIMÇIQ"). Hesabı yoxlayın: lazımdırsa aktivləşdirin, lazım deyilsə silin.' -f $item.UserName)
                 }
             }
             $plainPassword = $null
@@ -1413,11 +1458,12 @@ function Test-PortSpec {
         [AllowEmptyString()]
         [string]$Value
     )
-    if ($Value -match '^\d{1,5}$') {
+    # [0-9], \d yox: .NET-də \d ərəb (٤٤٣) və başqa yazıların rəqəmlərini də tutur, sonra [int] xəta verir
+    if ($Value -cmatch '^[0-9]{1,5}$') {
         $port = [int]$Value
         return ($port -ge 1 -and $port -le 65535)
     }
-    if ($Value -match '^(\d{1,5})-(\d{1,5})$') {
+    if ($Value -cmatch '^([0-9]{1,5})-([0-9]{1,5})$') {
         $from = [int]$Matches[1]
         $to = [int]$Matches[2]
         return ($from -ge 1 -and $to -le 65535 -and $from -le $to)
@@ -1434,10 +1480,10 @@ function Test-PortInList {
         [string[]]$List = @()
     )
     foreach ($item in $List) {
-        if ($item -match '^(\d+)-(\d+)$') {
+        if ($item -cmatch '^([0-9]+)-([0-9]+)$') {
             if ($Port -ge [int]$Matches[1] -and $Port -le [int]$Matches[2]) { return $true }
         }
-        elseif ($item -match '^\d+$' -and [int]$item -eq $Port) {
+        elseif ($item -cmatch '^[0-9]+$' -and [int]$item -eq $Port) {
             return $true
         }
     }
@@ -1451,9 +1497,11 @@ function Test-IpAddressText {
     )
     # IPv4 ciddi yoxlanılır: [IPAddress]::TryParse "10.1" kimi natamam və ya "010" kimi
     # (səkkizlik say kimi oxunan) yazılışları da qəbul edir.
-    $octet = '(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)'
-    if ($Text -match ('^{0}(\.{0}){{3}}$' -f $octet)) { return $true }
-    if ($Text.Contains(':') -and -not $Text.Contains('%')) {
+    $octet = '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+    if ($Text -cmatch ('^{0}(\.{0}){{3}}$' -f $octet)) { return $true }
+    # IPv6: yalnız hex rəqəmlər, : və . (sonda IPv4 hissəsi üçün). TryParse mötərizəli [::1] və
+    # [::1]:3389 yazılışını da qəbul edir; onlar, zona (%) və ASCII olmayan rəqəmlər burada rədd olunur.
+    if ($Text.Contains(':') -and $Text -cmatch '^[0-9A-Fa-f:.]+$') {
         $ip = $null
         return [System.Net.IPAddress]::TryParse($Text, [ref]$ip)
     }
@@ -1497,7 +1545,7 @@ function Resolve-RemoteAddressToken {
     $keyword = $script:AddressKeywords | Where-Object { $_ -eq $Token } | Select-Object -First 1
     if ($keyword) { return $keyword }
 
-    if ($Token -match '^([^/]+)/(\d{1,3})$') {
+    if ($Token -cmatch '^([^/]+)/([0-9]{1,3})$') {
         # CIDR: 10.0.0.0/8, 2001:db8::/32
         $address = $Matches[1]
         $prefixLength = [int]$Matches[2]
@@ -1554,18 +1602,111 @@ function ConvertTo-PortList {
     $items
 }
 
+function ConvertTo-BigInteger {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Address
+    )
+    # IP ünvanını işarəsiz tam ədədə çevirir (IPv4 və IPv6 eyni üsulla)
+    $bytes = ([System.Net.IPAddress]::Parse($Address)).GetAddressBytes()
+    [array]::Reverse($bytes)
+    # Sonuncu sıfır bayt ədədin müsbət qalması üçündür (BigInteger baytları işarəli oxuyur)
+    return [System.Numerics.BigInteger]::new([byte[]]($bytes + [byte]0))
+}
+
+function ConvertTo-AddressRange {
+    param(
+        [AllowEmptyString()]
+        [string]$Token
+    )
+    # Ünvan yazılışını ədədi aralığa çevirir: Family (4 və ya 6), Start, End.
+    # Açar sözlər (LocalSubnet, Internet və s.) və tanınmayan yazılış üçün $null qaytarır.
+    if ($Token -cmatch '^([^/]+)/([0-9]{1,3})$') {
+        $address = $Matches[1]
+        $prefixLength = [int]$Matches[2]
+        if (-not (Test-IpAddressText -Text $address)) { return $null }
+        $family = 4
+        $bits = 32
+        if ($address.Contains(':')) {
+            $family = 6
+            $bits = 128
+        }
+        if ($prefixLength -gt $bits) { return $null }
+        $size = [System.Numerics.BigInteger]::Pow(2, $bits - $prefixLength)
+        $value = ConvertTo-BigInteger -Address $address
+        $start = $value - ($value % $size)
+        return [pscustomobject]@{ Family = $family; Start = $start; End = $start + $size - 1 }
+    }
+    if ($Token -cmatch '^([^/]+)/([0-9.]+)$') {
+        $address = $Matches[1]
+        $mask = $Matches[2]
+        if (-not (Test-IpAddressText -Text $address) -or -not (Test-IpAddressText -Text $mask)) { return $null }
+        # Düzgün (ardıcıl) maska üçün ünvan sayı 2^32 - maska olur
+        $size = [System.Numerics.BigInteger]::Pow(2, 32) - (ConvertTo-BigInteger -Address $mask)
+        $value = ConvertTo-BigInteger -Address $address
+        $start = $value - ($value % $size)
+        return [pscustomobject]@{ Family = 4; Start = $start; End = $start + $size - 1 }
+    }
+    if ($Token -cmatch '^([^-]+)-([^-]+)$') {
+        $first = $Matches[1]
+        $last = $Matches[2]
+        if (-not (Test-IpAddressText -Text $first) -or -not (Test-IpAddressText -Text $last)) { return $null }
+        $family = 4
+        if ($first.Contains(':')) { $family = 6 }
+        return [pscustomobject]@{ Family = $family; Start = (ConvertTo-BigInteger -Address $first); End = (ConvertTo-BigInteger -Address $last) }
+    }
+    if (Test-IpAddressText -Text $Token) {
+        $family = 4
+        if ($Token.Contains(':')) { $family = 6 }
+        $value = ConvertTo-BigInteger -Address $Token
+        return [pscustomobject]@{ Family = $family; Start = $value; End = $value }
+    }
+    return $null
+}
+
+function Test-RangeCoverage {
+    param(
+        [AllowEmptyCollection()]
+        [object[]]$Ranges = @(),
+
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$From,
+
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$To
+    )
+    # Aralıqlar birlikdə [From, To] hissəsini boşluqsuz örtürmü?
+    $next = $From
+    foreach ($range in @($Ranges | Sort-Object -Property Start)) {
+        if ($range.End -lt $next) { continue }
+        if ($range.Start -gt $next) { return $false }
+        $next = $range.End + 1
+        if ($next -gt $To) { return $true }
+    }
+    return ($next -gt $To)
+}
+
 function Test-AnyAddress {
     param(
         [AllowEmptyCollection()]
         [string[]]$Addresses = @()
     )
-    # Ünvan göstərilməyibsə və ya yazılış bütün ünvanları əhatə edirsə - "hər yer"
+    # "Hər yer": ünvan göstərilməyib, Internet açar sözü var və ya ünvanlar birlikdə bütün unicast
+    # IPv4 və ya bütün qlobal IPv6 sahəsini əhatə edir. Yazılışa görə yox, əhatəyə görə yoxlanılır:
+    # 0.0.0.0/1|128.0.0.0/1 və ya 0.0.0.1-255.255.255.255 də "hər yer"dir.
     $list = @($Addresses)
     if ($list.Count -eq 0) { return $true }
+    $ipv4 = [System.Collections.Generic.List[object]]::new()
+    $ipv6 = [System.Collections.Generic.List[object]]::new()
     foreach ($address in $list) {
-        if ($script:MatchAllAddresses -contains $address) { return $true }
-        if ($address -match '/0+$') { return $true }   # məs. 0.0.0.0/00 - prefiks 0 bütün ünvanlardır
+        if ($address -eq 'Internet') { return $true }
+        $range = ConvertTo-AddressRange -Token $address
+        if ($null -eq $range) { continue }
+        if ($range.Family -eq 6) { $ipv6.Add($range) }
+        else { $ipv4.Add($range) }
     }
+    if (Test-RangeCoverage -Ranges $ipv4.ToArray() -From $script:AnyIPv4From -To $script:AnyIPv4To) { return $true }
+    if (Test-RangeCoverage -Ranges $ipv6.ToArray() -From $script:AnyIPv6From -To $script:AnyIPv6To) { return $true }
     return $false
 }
 
@@ -1659,7 +1800,7 @@ function ConvertTo-FirewallRulePlan {
     $prefix = 'Sətir {0} ({1}): ' -f $Line, $name
     $errorsBefore = $Errors.Count
 
-    if ($name -notmatch '^[A-Za-z0-9._-]{1,128}$') {
+    if ($name -cnotmatch '^[A-Za-z0-9._-]{1,128}$') {
         $Errors.Add($prefix + 'Name 1-128 simvol olmalı və yalnız latın hərfi, rəqəm, nöqtə, alt xətt, defisdən ibarət olmalıdır')
     }
     if (-not $displayName) { $displayName = $name }
@@ -1678,6 +1819,31 @@ function ConvertTo-FirewallRulePlan {
     $remotePort = @(ConvertTo-PortList -Values @(Split-ListValue -Value (Get-Field -Row $Row -Name 'RemotePort')) -Label 'RemotePort' -Prefix $prefix -Errors $Errors)
     if (($localPort.Count -gt 0 -or $remotePort.Count -gt 0) -and $protocol -notin @('TCP', 'UDP')) {
         $Errors.Add($prefix + 'port yalnız TCP və ya UDP protokolu üçün göstərilə bilər')
+    }
+
+    # ICMP tipi: "8" (echo request) və ya "tip:kod"; boş və ya Any = bütün ICMP tipləri
+    $icmpType = [System.Collections.Generic.List[string]]::new()
+    $icmpItems = @(Split-ListValue -Value (Get-Field -Row $Row -Name 'IcmpType'))
+    if (-not ($icmpItems.Count -eq 1 -and $icmpItems[0] -eq 'Any')) {
+        foreach ($icmpItem in $icmpItems) {
+            if ($icmpItem -eq 'Any') {
+                $Errors.Add($prefix + 'IcmpType-də "Any" başqa dəyərlərlə birlikdə yazıla bilməz')
+                continue
+            }
+            $icmpOk = $false
+            if ($icmpItem -cmatch '^([0-9]{1,3})(:([0-9]{1,3}))?$') {
+                $icmpOk = ([int]$Matches[1] -le 255) -and ((-not $Matches[3]) -or ([int]$Matches[3] -le 255))
+            }
+            if (-not $icmpOk) {
+                $Errors.Add($prefix + ('IcmpType "{0}" yanlışdır (0-255 arası tip və ya tip:kod, məs. 8 və ya 3:4)' -f $icmpItem))
+            }
+            elseif (-not $icmpType.Contains($icmpItem)) {
+                $icmpType.Add($icmpItem)
+            }
+        }
+    }
+    if ($icmpType.Count -gt 0 -and $protocol -notin @('ICMPv4', 'ICMPv6')) {
+        $Errors.Add($prefix + 'IcmpType yalnız ICMPv4 və ya ICMPv6 protokolu üçün göstərilə bilər')
     }
 
     $remoteAddress = [System.Collections.Generic.List[string]]::new()
@@ -1724,7 +1890,7 @@ function ConvertTo-FirewallRulePlan {
         }
         else {
             $expanded = [Environment]::ExpandEnvironmentVariables($program)
-            if ($expanded -notmatch '^[A-Za-z]:\\') {
+            if ($expanded -cnotmatch '^[A-Za-z]:\\') {
                 $Errors.Add($prefix + 'Program tam yol olmalıdır (məs. C:\App\app.exe və ya %ProgramFiles%\App\app.exe) və ya System')
             }
             elseif (-not (Test-Path -LiteralPath $expanded -PathType Leaf)) {
@@ -1744,6 +1910,7 @@ function ConvertTo-FirewallRulePlan {
         Protocol      = $protocol
         LocalPort     = $localPort
         RemotePort    = $remotePort
+        IcmpType      = $icmpType.ToArray()
         RemoteAddress = $remoteAddress.ToArray()
         Profile       = $profileValue
         Program       = $program
@@ -1838,7 +2005,7 @@ function Invoke-FirewallConfiguration {
         @{ Label = 'Name'; Expression = { $_.Name } },
         @{ Label = 'İstiqamət'; Expression = { $_.Direction } },
         @{ Label = 'Əməl'; Expression = { $_.Action } },
-        @{ Label = 'Protokol'; Expression = { $_.Protocol } },
+        @{ Label = 'Protokol'; Expression = { if (@($_.IcmpType).Count -gt 0) { '{0} ({1})' -f $_.Protocol, (@($_.IcmpType) -join ',') } else { $_.Protocol } } },
         @{ Label = 'Lokal port'; Expression = { Format-ListValue -Value $_.LocalPort } },
         @{ Label = 'Uzaq port'; Expression = { Format-ListValue -Value $_.RemotePort } },
         @{ Label = 'Uzaq ünvan'; Expression = { Format-ListValue -Value $_.RemoteAddress } },
@@ -1872,6 +2039,8 @@ function Invoke-FirewallConfiguration {
     }
 
     $createdNames = [System.Collections.Generic.List[string]]::new()
+    # Yaradılan, amma hələ $createdNames-ə düşməyən qayda (New-NetFirewallRule və yoxlama arası)
+    $pendingName = $null
     $failed = 0
     $rolledBack = 0
     $finished = $false
@@ -1898,7 +2067,9 @@ function Invoke-FirewallConfiguration {
                 if (@($rule.RemotePort).Count -gt 0) { $ruleParams['RemotePort'] = [string[]]$rule.RemotePort }
                 if (@($rule.RemoteAddress).Count -gt 0) { $ruleParams['RemoteAddress'] = [string[]]$rule.RemoteAddress }
                 if ($rule.Program) { $ruleParams['Program'] = $rule.Program }
+                if (@($rule.IcmpType).Count -gt 0) { $ruleParams['IcmpType'] = [string[]]$rule.IcmpType }
 
+                $pendingName = $rule.Name
                 $null = New-NetFirewallRule @ruleParams
 
                 # Yoxlama: qayda həqiqətən yaradılıbmı?
@@ -1906,6 +2077,7 @@ function Invoke-FirewallConfiguration {
                     throw 'qayda yaradıldıqdan sonra tapılmadı'
                 }
                 $createdNames.Add($rule.Name)
+                $pendingName = $null
                 Write-RunLog OK ('Əlavə edildi: {0}' -f $target)
             }
             catch {
@@ -1920,6 +2092,21 @@ function Invoke-FirewallConfiguration {
         # Hamısı və ya heç biri: xəta olsa və ya iş Ctrl+C ilə kəsilsə, yarımçıq qayda dəsti qalmasın.
         # (Ctrl+C-də catch işləmir, finally isə işləyir.)
         if (-not $finished) {
+            if ($pendingName) {
+                # İş qayda yaradılarkən və ya yoxlanılarkən kəsilibsə, həmin qayda yaranmış ola bilər.
+                # Plan mərhələsində bu ID ilə qayda yox idi, ona görə bizim qrupdakı belə qayda bizimdir.
+                try {
+                    $leftover = @(Get-NetFirewallRule -Name $pendingName -PolicyStore PersistentStore -ErrorAction SilentlyContinue |
+                            Where-Object { [string]$_.Group -eq $RuleGroup })
+                    if ($leftover.Count -gt 0) {
+                        Remove-NetFirewallRule -Name $pendingName -PolicyStore PersistentStore -Confirm:$false -ErrorAction Stop
+                        Write-RunLog WARN ('İş kəsilən anda yaradılmış qayda da geri silindi: {0}' -f $pendingName)
+                    }
+                }
+                catch {
+                    Write-RunLog ERROR ('"{0}" qaydası iş kəsilən anda yaranmış ola bilər, amma yoxlanıla və ya silinə bilmədi. Əl ilə yoxlayın: Get-NetFirewallRule -Name {0}' -f $pendingName)
+                }
+            }
             if ($createdNames.Count -gt 0) {
                 Write-RunLog WARN ('Qalan qaydalar əlavə edilmir; bu işə salınmada əlavə olunan {0} qayda geri silinir.' -f $createdNames.Count)
                 foreach ($createdName in $createdNames) {
@@ -2251,7 +2438,16 @@ function Invoke-LogCollection {
     }
     [System.IO.Compression.ZipFile]::CreateFromDirectory($dataDir, $zipFile, [System.IO.Compression.CompressionLevel]::Optimal, $false)
     $hash = (Get-FileHash -LiteralPath $zipFile -Algorithm SHA256).Hash.ToLowerInvariant()
-    Write-Utf8File -Path ($zipFile + '.sha256') -Content ('{0} *{1}' -f $hash, (Split-Path -Path $zipFile -Leaf))
+    # BOM-suz və LF ilə: "sha256sum -c" faylı belə oxuyur (Get-FileHash ilə də yoxlamaq olar)
+    Write-Utf8File -Path ($zipFile + '.sha256') -Content ("{0} *{1}`n" -f $hash, (Split-Path -Path $zipFile -Leaf)) -NoBom
+
+    # Hər şey arxivdədir: həssas faylların (.evtx, istifadəçi siyahıları) diskdə ikinci nüsxəsi qalmasın
+    try {
+        Remove-Item -LiteralPath $dataDir -Recurse -Force -Confirm:$false -ErrorAction Stop
+    }
+    catch {
+        Write-RunLog WARN ('Arxivə yığılmış "data" qovluğu silinə bilmədi, əl ilə silin: {0} ({1})' -f $dataDir, $_.Exception.Message)
+    }
 
     Write-RunLog OK ('Arxiv: {0}' -f $zipFile)
     Write-RunLog INFO ('SHA256: {0}' -f $hash)
@@ -2265,6 +2461,10 @@ function Invoke-LogCollection {
 # ============================================================================
 #  Əsas axın
 # ============================================================================
+# Testlər (tests\WinAdminToolkit.Tests.ps1) funksiyaları yükləmək üçün skripti dot-source edir:
+# bu halda əsas axın işə düşmür.
+if ($env:WAT_SKIP_MAIN -eq '1') { return }
+
 $exitCode = 0
 $result = $null
 $runDirectory = $null
@@ -2280,7 +2480,7 @@ try {
     # Nisbi yolları PowerShell-in cari qovluğuna görə tam yola çevir (.NET başqa qovluğu görə bilər)
     $WorkDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkDirectory)
     if ($WorkDirectory.Length -gt 3) { $WorkDirectory = $WorkDirectory.TrimEnd('\') }
-    if ($WorkDirectory -notmatch '^[A-Za-z]:\\') {
+    if ($WorkDirectory -cnotmatch '^[A-Za-z]:\\') {
         throw ('WorkDirectory yerli diskdə tam yol olmalıdır (məs. C:\AdminToolkit): {0}' -f $WorkDirectory)
     }
     if ($Action -in @('CreateUsers', 'ConfigureFirewall')) {
