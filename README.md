@@ -23,11 +23,12 @@ The script's messages and built-in help are in Azerbaijani: `Get-Help .\WinAdmin
 - The plan is shown and you're asked to confirm before any change. The default answer is No, so just pressing Enter does nothing. `-Force` skips the prompt for automation.
 - Existing accounts and rules are skipped, never modified.
 - There are no passwords in the CSV. Each account gets a cryptographically random temporary password and has to change it at first logon. The password is never passed to a PowerShell cmdlet, so it doesn't end up in Module Logging (event 4103).
-- Accounts are created disabled and enabled only after they've been added to their groups. If a step fails, the half-created account is deleted.
+- Accounts are created disabled and enabled only after they've been added to their groups. If a later step fails (Ctrl+C included), the half-created account is deleted. If Ctrl+C lands inside `New-LocalUser` itself, the account can stay behind, disabled; its temporary password is then in `credentials.csv`, marked `YARIMÇIQ`, so you can enable or delete it.
+- Every new account has to change its password at the first logon. With Network Level Authentication, which Remote Desktop uses by default, Windows refuses an RDP logon with such a password ([Microsoft](https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/error-password-change-expired-password)). So the first logon of an account that will only use RDP has to happen at the console, or the password has to be changed from another session first.
 - Adding anyone to Administrators, Backup Operators or Hyper-V Administrators needs `-AllowPrivilegedGroups`.
-- Rules that could lock you out or open everything need `-AllowRiskyRules`: any inbound block that covers port 22, 3389, 5985 or 5986 or all ports (even when an address is given), blocking `svchost.exe`, `System` or `sshd.exe`, blocking all outbound traffic, and allowing all ports from anywhere.
+- Rules that could lock you out or open everything need `-AllowRiskyRules`: any inbound block that covers port 22, 3389, 5985 or 5986 or all ports (even when an address is given), blocking `svchost.exe`, `System` or `sshd.exe`, blocking all outbound traffic, and allowing all ports from anywhere. "Anywhere" is an empty `RemoteAddress`, `Any`, `Internet`, or addresses that together cover every unicast IPv4 or every global IPv6 address, however they are written: `0.0.0.0/1|128.0.0.0/1` counts.
 - Allow rules go to the Domain and Private profiles by default, not Public.
-- Before the firewall is touched, the full policy is exported with `netsh advfirewall export`. If one rule fails, the rules added in that run are removed again.
+- Before the firewall is touched, the full policy is exported with `netsh advfirewall export`. If one rule fails, or you press Ctrl+C, the rules added in that run are removed again, including one that was being created at that moment.
 - The output folder (`-WorkDirectory`, default `C:\AdminToolkit`) and its parents are checked. If other users can write to them or rename them, the script stops. Each run gets a new folder that only Administrators and SYSTEM can open, from the moment it's created.
 - `netsh`, `wevtutil` and `ipconfig` are started by full path from the system directory, not through `PATH`.
 - Groups are looked up by SID, so it also works on Russian, Turkish or other localized Windows.
@@ -71,7 +72,7 @@ Each run writes to its own folder, `C:\AdminToolkit\<date-time>_<Action>\`:
 - `run.log`: everything the run did
 - `credentials.csv` (`CreateUsers`): the temporary passwords. Hand them over securely, then delete the file.
 - `firewall-backup_<date-time>.wfw` (`ConfigureFirewall`): the full policy backup. `netsh advfirewall import` restores it, but that replaces all local rules.
-- `<COMPUTER>_logs_<date-time>.zip` and `.sha256` (`CollectLogs`): `.evtx` exports, CSV summaries (key Security events, errors and warnings from the other logs), system info, hotfixes, automatic services that aren't running, listening ports, `ipconfig /all`, firewall profiles, local users and local administrators. It contains sensitive data.
+- `<COMPUTER>_logs_<date-time>.zip` and `.sha256` (`CollectLogs`): `.evtx` exports, CSV summaries (key Security events, errors and warnings from the other logs), system info, hotfixes, automatic services that aren't running, listening ports, `ipconfig /all`, firewall profiles, local users and local administrators. It contains sensitive data. The files are only kept inside the ZIP; the folder they were collected in is deleted. The `.sha256` file is in the `sha256sum` format, so `sha256sum -c` checks it, or compare it with `Get-FileHash`.
 
 Exit codes: `0` success, `1` some items failed, `2` stopped (see the log), `3` you answered No and nothing was changed.
 
@@ -103,41 +104,42 @@ Firewall rules ([samples/firewall-rules.csv](samples/firewall-rules.csv)):
 | `Profile` | `Domain\|Private\|Public\|Any`. Empty means `Domain\|Private` for Allow and `Any` for Block |
 | `Program` | Full path (for example `%ProgramFiles%\App\app.exe`) or `System` |
 | `Description` | Free text |
+| `IcmpType` | ICMPv4 and ICMPv6 only: a type or `type:code` from 0 to 255, for example `8` (echo request, what ping sends). Several with `\|`. Empty means every ICMP type |
 
 ## Testing
 
-- PSScriptAnalyzer reports nothing, including the compatibility rules for Windows PowerShell 5.1 (Server 2016, Windows 10 1809) and PowerShell 7.
-- 253 unit, 28 end-to-end and 7 interruption (Ctrl+C) tests pass on PowerShell 7.4 with the Windows cmdlets mocked. The CSV parser was also fuzzed against Python's `csv` module. These tests aren't in the repo yet.
-- It hasn't been run on a real Windows machine yet. Local accounts, the firewall cmdlets, ACLs, `netsh` and `wevtutil` have only been exercised through mocks, so treat it as untested on Windows.
+- `tests/WinAdminToolkit.Tests.ps1`: Pester 5 unit tests for the input checks, the "anywhere" rule, the `IcmpType` column and the file helpers. They load the functions without running the script: `Invoke-Pester -Path .\tests\WinAdminToolkit.Tests.ps1`
+- `tests/e2e.ps1`: runs every action for real, checks the accounts, rules and files it produced, and removes the accounts and rules again. It changes the machine, so it only runs on a throw-away VM and only with `-ThrowAwayMachine`: `powershell -ExecutionPolicy Bypass -File .\tests\e2e.ps1 -ThrowAwayMachine`
+- GitHub Actions runs PSScriptAnalyzer (default rules) and the unit tests in Windows PowerShell 5.1 and PowerShell 7, and the end-to-end test on a `windows-latest` runner. That is the only real Windows the script has run on so far: Windows 10/11 and Server 2016/2019 are still untested.
+- Before this, the script was checked with PSScriptAnalyzer's compatibility rules for Windows PowerShell 5.1 (Server 2016, Windows 10 1809) and PowerShell 7, and with 253 unit, 28 end-to-end and 7 interruption (Ctrl+C) tests against mocked cmdlets. That mock-based suite is not in the repo.
 
-## Known issues
+## Known limitations
 
-Found in the last review and not fixed yet:
-
-- **Firewall rollback gap.** If Ctrl+C lands while a rule is being created or checked, that rule can stay behind, enabled, and the log doesn't mention it. Remove it with `Remove-NetFirewallRule -Name <name>`, or remove the whole group with `-Action RemoveFirewallRules`.
-- **Ctrl+C inside `New-LocalUser`.** The account can be left disabled with an unknown password. The script warns about it but doesn't delete it.
-- **Misleading advice after a race.** If someone else creates an account with the same name between the check and the creation, the log suggests deleting it. It isn't yours, so don't.
-- **"Anywhere" is matched by spelling.** `0.0.0.0/1|128.0.0.0/1`, `0.0.0.1-255.255.255.255` or the `Internet` keyword don't trigger the `-AllowRiskyRules` check the way `Any` does.
-- **Non-ASCII digits.** A port written as `٤٤٣` stops the script with a raw .NET error instead of a validation message (nothing is changed), and some IPv4 addresses written that way pass validation.
-- **The Latin-only checks accept `İ` and `K` (the Kelvin sign)** in user names, rule names and `-RuleGroup`, because `-match` ignores case.
-- **Bracketed IPv6** such as `[::1]` or `[::1]:3389` passes validation and is handed to Windows unchanged.
+- **"Anywhere" means address coverage.** A list of every public range that leaves out the private networks is not flagged. That is what the `Internet` keyword means, and `Internet` is flagged.
+- **Ctrl+C inside `New-LocalUser`.** The account is not deleted automatically, because it could belong to someone who created the same name at that moment. Its temporary password is in `credentials.csv`, marked `YARIMÇIQ`.
+- **First RDP logon.** See the note on Network Level Authentication under Safeguards.
 
 ## Layout
 
 ```
 windows-admin-toolkit/
 ├── WinAdminToolkit.ps1       # the script (UTF-8 with BOM, CRLF)
-└── samples/
-    ├── users.csv
-    └── firewall-rules.csv
+├── samples/
+│   ├── users.csv
+│   └── firewall-rules.csv
+├── tests/
+│   ├── WinAdminToolkit.Tests.ps1   # Pester unit tests
+│   └── e2e.ps1                     # real run, throw-away machines only
+└── .github/workflows/tests.yml
 ```
 
 If you edit the script, save it as UTF-8 with BOM. Without the BOM, Windows PowerShell 5.1 garbles the Azerbaijani text.
 
 ## TODO
 
-- fix the known issues above
-- add the test suite to the repo
+- split the script into a module (`.psm1`) so that its parts can be tested on their own
+- run the end-to-end test on Windows 10/11 and Server 2016/2019
+- add the mock-based Ctrl+C tests to the repo
 - sign the script (Authenticode)
 
 ## License
