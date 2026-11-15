@@ -88,7 +88,7 @@ Users ([samples/users.csv](samples/users.csv)):
 | `FullName` | Can contain Azerbaijani letters |
 | `Description` | Up to 48 characters |
 | `Groups` | For example `Users\|Remote Desktop Users`. English name, localized name or SID. Every new account also goes into Users |
-| `AccountExpires` | Last active day, `yyyy-MM-dd` or `dd.MM.yyyy`. Empty means never |
+| `AccountExpires` | Last active day, `yyyy-MM-dd` or `dd.MM.yyyy`. Empty means never. A day in the past is refused, so the sample's `2030-08-31` has to be moved forward after that date |
 
 Firewall rules ([samples/firewall-rules.csv](samples/firewall-rules.csv)):
 
